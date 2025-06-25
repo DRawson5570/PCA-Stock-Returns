@@ -1,127 +1,140 @@
 const express = require('express');
-const UserService = require('../services/userService.js');
-const { requireUser } = require('./middleware/auth.js');
-const User = require('../models/User.js');
-const { generateAccessToken, generateRefreshToken } = require('../utils/auth.js');
-const jwt = require('jsonwebtoken');
-
 const router = express.Router();
+const bcrypt = require('bcrypt');
+const User = require('../models/User');
+const { generateAccessToken, generateRefreshToken } = require('../utils/auth');
 
-router.post('/login', async (req, res) => {
-  const sendError = msg => res.status(400).json({ message: msg });
-  const { email, password } = req.body;
+// Register route
+router.post('/register', async (req, res) => {
+  try {
+    console.log('[AUTH ROUTES] Registration attempt:', { email: req.body.email });
+    
+    const { username, email, password } = req.body;
 
-  if (!email || !password) {
-    return sendError('Email and password are required');
-  }
+    if (!email || !password) {
+      console.log('[AUTH ROUTES] Registration failed: Missing required fields');
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required'
+      });
+    }
 
-  const user = await UserService.authenticateWithPassword(email, password);
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      console.log('[AUTH ROUTES] Registration failed: User already exists');
+      return res.status(400).json({
+        success: false,
+        error: 'User already exists'
+      });
+    }
 
-  if (user) {
+    // Create new user
+    const user = new User({ username, email, password });
+    await user.save();
+    console.log('[AUTH ROUTES] User created successfully:', user.email);
+
+    // Generate tokens
     const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken(user);
+    console.log('[AUTH ROUTES] Access token generated for registration');
 
-    user.refreshToken = refreshToken;
-    await user.save();
-    return res.json({...user.toObject(), accessToken, refreshToken});
-  } else {
-    return sendError('Email or password is incorrect');
-
-  }
-});
-
-router.post('/register', async (req, res, next) => {
-  if (req.user) {
-    return res.json({ user: req.user });
-  }
-  try {
-    const user = await UserService.create(req.body);
-    return res.status(200).json(user);
-  } catch (error) {
-    console.error(`Error while registering user: ${error}`);
-    return res.status(400).json({ error });
-  }
-});
-
-router.post('/logout', async (req, res) => {
-  const { email } = req.body;
-
-  const user = await User.findOne({ email });
-  if (user) {
-    user.refreshToken = null;
-    await user.save();
-  }
-
-  res.status(200).json({ message: 'User logged out successfully.' });
-});
-
-router.post('/refresh', async (req, res) => {
-  const { refreshToken } = req.body;
-
-  if (!refreshToken) {
-    return res.status(401).json({
-      success: false,
-      message: 'Refresh token is required'
-    });
-  }
-
-  try {
-    // Verify the refresh token
-    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-
-    // Find the user
-    const user = await UserService.get(decoded.sub);
-
-    if (!user) {
-      return res.status(403).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    if (user.refreshToken !== refreshToken) {
-      return res.status(403).json({
-        success: false,
-        message: 'Invalid refresh token'
-      });
-    }
-
-    // Generate new tokens
-    const newAccessToken = generateAccessToken(user);
-    const newRefreshToken = generateRefreshToken(user);
-
-    // Update user's refresh token in database
-    user.refreshToken = newRefreshToken;
-    await user.save();
-
-    // Return new tokens
-    return res.status(200).json({
+    res.json({
       success: true,
       data: {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshToken
+        user: {
+          id: user._id,
+          email: user.email,
+          username: user.username
+        },
+        accessToken
       }
     });
-
   } catch (error) {
-    console.error(`Token refresh error: ${error.message}`);
-
-    if (error.name === 'TokenExpiredError') {
-      return res.status(403).json({
-        success: false,
-        message: 'Refresh token has expired'
-      });
-    }
-
-    return res.status(403).json({
+    console.error('[AUTH ROUTES] Registration error:', error.message);
+    console.error('[AUTH ROUTES] Registration error stack:', error.stack);
+    res.status(500).json({
       success: false,
-      message: 'Invalid refresh token'
+      error: 'Registration failed'
     });
   }
 });
 
-router.get('/me', requireUser, async (req, res) => {
-  return res.status(200).json(req.user);
+// Login route
+router.post('/login', async (req, res) => {
+  try {
+    console.log('[AUTH ROUTES] Login attempt:', { email: req.body.email });
+    console.log('[AUTH ROUTES] Request body keys:', Object.keys(req.body));
+    
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      console.log('[AUTH ROUTES] Login failed: Missing credentials');
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required'
+      });
+    }
+
+    // Find user
+    console.log('[AUTH ROUTES] Looking up user in database');
+    const user = await User.findOne({ email });
+    if (!user) {
+      console.log('[AUTH ROUTES] Login failed: User not found');
+      return res.status(400).json({
+        success: false,
+        error: 'Email or password is incorrect'
+      });
+    }
+
+    console.log('[AUTH ROUTES] User found, verifying password');
+    // Check password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      console.log('[AUTH ROUTES] Login failed: Invalid password');
+      return res.status(400).json({
+        success: false,
+        error: 'Email or password is incorrect'
+      });
+    }
+
+    console.log('[AUTH ROUTES] Password verified, generating tokens');
+    // Generate tokens
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+    
+    console.log('[AUTH ROUTES] Tokens generated successfully');
+    console.log('[AUTH ROUTES] Access token length:', accessToken ? accessToken.length : 0);
+    console.log('[AUTH ROUTES] Refresh token length:', refreshToken ? refreshToken.length : 0);
+
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: user._id,
+          email: user.email,
+          username: user.username
+        },
+        accessToken,
+        refreshToken
+      }
+    });
+  } catch (error) {
+    console.error('[AUTH ROUTES] Login error:', error.message);
+    console.error('[AUTH ROUTES] Login error stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      error: 'Login failed'
+    });
+  }
+});
+
+// Logout route
+router.post('/logout', (req, res) => {
+  console.log('[AUTH ROUTES] Logout request received');
+  res.json({
+    success: true,
+    message: 'Logged out successfully'
+  });
 });
 
 module.exports = router;
